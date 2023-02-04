@@ -26,13 +26,7 @@
 </template>
 
 <script lang="ts" setup>
-import {
-  shallowRef,
-  computed,
-  watch,
-  onMounted,
-  onUnmounted,
-} from "vue";
+import { shallowRef, computed, watch, onMounted, onUnmounted } from "vue";
 import { useApiStore, useFileStore } from "@/api/stores";
 import { Pair, File, Legend } from "@/api/models";
 import { useCluster, useD3HullTool, useD3Tooltip } from "@/composables";
@@ -41,6 +35,8 @@ import { useElementSize, useVModel } from "@vueuse/core";
 import { Clustering, Cluster } from "@/util/clustering-algorithms/ClusterTypes";
 import { getClusterElements } from "@/util/clustering-algorithms/ClusterFunctions";
 import * as d3 from "d3";
+import { EnergyLayout, Metric } from "@/util/graph-layout/EnergyLayout";
+import * as energyForces from "@/util/graph-layout/energyForces";
 
 interface Props {
   showSingletons?: boolean;
@@ -62,7 +58,11 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {
   nodeSize: 7,
 });
-const emit = defineEmits(["update:selectedNode", "update:selectedCluster", "click:node"]);
+const emit = defineEmits([
+  "update:selectedNode",
+  "update:selectedCluster",
+  "click:node",
+]);
 
 const fileStore = useFileStore();
 const { cutoff, cutoffDebounced } = storeToRefs(useApiStore());
@@ -181,7 +181,7 @@ const selectNode = (node: any | null): void => {
   selectedNodeValue.value = node;
 
   // Select the cluster that contains the node (if any).
-  const cluster = props.clustering.find(c => getClusterElements(c).has(node));
+  const cluster = props.clustering.find((c) => getClusterElements(c).has(node));
   if (cluster) selectCluster(cluster);
 };
 
@@ -196,7 +196,7 @@ watch(selectedClusterValue, () => {
 // Convex hull tool for creating hulls around clusters.
 const graphHullTool = useD3HullTool({
   canvas: graph.select("g"),
-  onClick: selectCluster
+  onClick: selectCluster,
 });
 
 // Add a marker to the graph for showing the direction of the edges.
@@ -234,55 +234,57 @@ graph.on("mousedown.s", () => {
 
 // Calculate the edges of the graph.
 const calculateEdges = (): any[] => {
-  return props.pairs
-    // Filter pairs with a similarity lower than the cutoff
-    .filter(pair => pair.similarity >= cutoff.value)
-    // Filter pairs where one of the files is not visible.
-    .filter(pair => {
-      const left = nodesMap.value.get(pair.leftFile.id);
-      const right = nodesMap.value.get(pair.rightFile.id);
-      return isVisible(left) && isVisible(right);
-    })
-    // Map the pair to an edge object.
-    .map(pair => {
-      const left = nodesMap.value.get(pair.leftFile.id);
-      const leftInfo = left.file.extra;
-      const right = nodesMap.value.get(pair.rightFile.id);
-      const rightInfo = right.file.extra;
+  return (
+    props.pairs
+      // Filter pairs with a similarity lower than the cutoff
+      .filter((pair) => pair.similarity >= cutoff.value)
+      // Filter pairs where one of the files is not visible.
+      .filter((pair) => {
+        const left = nodesMap.value.get(pair.leftFile.id);
+        const right = nodesMap.value.get(pair.rightFile.id);
+        return isVisible(left) && isVisible(right);
+      })
+      // Map the pair to an edge object.
+      .map((pair) => {
+        const left = nodesMap.value.get(pair.leftFile.id);
+        const leftInfo = left.file.extra;
+        const right = nodesMap.value.get(pair.rightFile.id);
+        const rightInfo = right.file.extra;
 
-      // If the edge is directed.
-      // This is the case when both files contain a creation date.
-      const directed = !!(leftInfo.createdAt && rightInfo.createdAt);
+        // If the edge is directed.
+        // This is the case when both files contain a creation date.
+        const directed = !!(leftInfo.createdAt && rightInfo.createdAt);
 
-      // Determine the source & target nodes.
-      let source = left;
-      let target = right;
-      // Switch the source & target when the right node is older than the left node.
-      if (directed && rightInfo.createdAt < leftInfo.createdAt) {
-        source = right;
-        target = left;
-      }
+        // Determine the source & target nodes.
+        let source = left;
+        let target = right;
+        // Switch the source & target when the right node is older than the left node.
+        if (directed && rightInfo.createdAt < leftInfo.createdAt) {
+          source = right;
+          target = left;
+        }
 
-      // Add the the nodes to eachother's neighbors list.
-      left.neighbors.push(right);
-      right.neighbors.push(left);
+        // Add the the nodes to eachother's neighbors list.
+        left.neighbors.push(right);
+        right.neighbors.push(left);
 
-      // Create the edge object.
-      const edge = {
-        id: pair.id,
-        directed,
-        source,
-        target,
-        similarity: pair.similarity,
-        width: 4 * Math.pow(Math.max(0.4, (pair.similarity - 0.75) / 0.2), 2)
-      };
+        // Create the edge object.
+        const edge = {
+          id: pair.id,
+          directed,
+          source,
+          target,
+          similarity: pair.similarity,
+          width: 4 * Math.pow(Math.max(0.4, (pair.similarity - 0.75) / 0.2), 2),
+        };
 
-      // Add the edge to the source & target nodes.
-      source.edges.push(edge);
-      target.edges.push(edge);
+        // Add the edge to the source & target nodes.
+        source.edges.push(edge);
+        target.edges.push(edge);
 
-      return edge;
-    });
+        return edge;
+      })
+  );
 };
 
 // Calculate the nodes of the graph.
@@ -290,10 +292,10 @@ const calculateNodes = (): any[] => {
   const labels = props.legend;
   const nodesList = Array.from(nodesMap.value.values())
     // Only display the nodes that are visible.
-    .filter(node => isVisible(node))
+    .filter((node) => isVisible(node))
     // Only display the nodes that have neighbors.
     // Unless singletons are enabled.
-    .filter(node => node.neighbors.length > 0 || props.showSingletons);
+    .filter((node) => node.neighbors.length > 0 || props.showSingletons);
 
   for (const node of nodesList) {
     // Determine if the node is the source of a cluster.
@@ -313,11 +315,15 @@ const calculateNodes = (): any[] => {
     node.source = outgoing > 0 && incoming === 0;
 
     // Determine the color of the node.
-    const defaultColor = labels[node.label] ? labels[node.label].color : d3.schemeCategory10[0];
+    const defaultColor = labels[node.label]
+      ? labels[node.label].color
+      : d3.schemeCategory10[0];
     // When a cluster is selected
     // Make all other nodes gray, except for the nodes in the cluster.
     if (selectedClusterValue.value) {
-      node.fillColor = selectedClusterMeta.clusterFilesSet.value.has(node.file) ? defaultColor : "grey";
+      node.fillColor = selectedClusterMeta.clusterFilesSet.value.has(node.file)
+        ? defaultColor
+        : "grey";
     } else {
       node.fillColor = defaultColor;
     }
@@ -351,46 +357,45 @@ watch(
   { deep: true }
 );
 
-// D3 Simulation force link
-const forceLink = d3
-  .forceLink()
-  .id((d: any) => d.id)
-  .strength(
-    (link: any) =>
-      Math.pow(Math.max(0.4, (link.similarity - 0.8) / 0.2), 3) /
-      Math.min(link.source.neighbors.length, link.target.neighbors.length)
-  );
-
 // If the simulation should be paused.
 const simulationPaused = shallowRef(false);
 
-// D3 simulation
-const simulation = d3
-  .forceSimulation()
-  .alphaDecay(0.1)
-  .force("link", forceLink)
-  .force("charge", d3.forceManyBody().distanceMax(200).strength(-20))
-  .force("center", d3.forceCenter(width.value / 2, height.value / 2))
-  .force("compact_x", d3.forceX(width.value / 2).strength(0.01))
-  .force("compact_y", d3.forceY(height.value / 2).strength(0.01))
-  .stop();
+const simulation = new EnergyLayout()
+  .force(
+    "link",
+    new energyForces.Links()
+      .strength(
+        (link: any) =>
+          (0.2 * Math.pow(Math.max(0.4, (link.similarity - 0.8) / 0.2), 3)) /
+          Math.min(link.source.neighbors.length, link.target.neighbors.length)
+      )
+      .length(40)
+  )
+  .force("onScreen", new energyForces.OnScreen().strength(1))
+  .force(
+    "charge",
+    new energyForces.Charge().charge(30).maxDistance(100).linkCharge(10)
+  )
+  .gamma(1);
 
 // D3 Simulation Drag ability
 const simulationDrag = d3
   .drag()
   .on("start", (event) => {
-    if (!event.active && !simulationPaused.value) simulation.alphaTarget(0.3).restart();
+    // if (!event.active && !simulationPaused.value) simulation.alphaTarget(0.3).restart();
     event.subject.fx = event.subject.x;
     event.subject.fy = event.subject.y;
     event.subject.justDragged = false;
   })
   .on("drag", (event) => {
-    event.subject.fx = event.x;
-    event.subject.fy = event.y;
+    simulation.gamma(1);
+    simulation.restart();
+    event.subject.x = event.x;
+    event.subject.y = event.y;
     event.subject.justDragged = true;
   })
   .on("end", (event) => {
-    if (!event.active) simulation.alphaTarget(0);
+    // if (!event.active) simulation.alphaTarget(0);
     event.subject.fx = null;
     event.subject.fy = null;
 
@@ -405,7 +410,8 @@ const simulationDrag = d3
 
       // Toggle the selected file.
       if (
-        event.subject.file && selectedNodeValue.value &&
+        event.subject.file &&
+        selectedNodeValue.value &&
         event.subject.file.id === selectedNodeValue.value.id
       ) {
         selectNode(null);
@@ -420,10 +426,15 @@ const simulationDrag = d3
 // Handler for every tick in the simulation.
 // A "tick" is a simulation step.
 simulation.on("tick", () => {
+  console.log(simulation._energy);
+  // Decrease the simulation speed.
+  simulation.gamma(simulation.gamma() * 0.99);
+  if(simulation.gamma() < 0.01) simulation.stop();
+
   if (graphEdges.value) {
     graphEdges.value.attr("d", (edge: any) => {
-      const { x: x0, y: y0 } = edge.source;
-      const { x: x1, y: y1 } = edge.target;
+      const { x: x0 = 0, y: y0 = 0 } = edge.source;
+      const { x: x1 = 0, y: y1 = 0 } = edge.target;
       return `M${x0},${y0}L${0.5 * (x0 + x1)},${0.5 * (y0 + y1)}L${x1},${y1}`;
     });
   }
@@ -432,7 +443,10 @@ simulation.on("tick", () => {
     graphNodes.value
       .attr("cx", (node: any) => node.x ?? 0)
       .attr("cy", (node: any) => node.y ?? 0)
-      .classed("selected", (node: any) => node.id === selectedNodeValue.value?.id);
+      .classed(
+        "selected",
+        (node: any) => node.id === selectedNodeValue.value?.id
+      );
   }
 
   // Clear the hulls
@@ -443,16 +457,20 @@ simulation.on("tick", () => {
     // If any cluster is selected, make sure only the selected cluster is colored.
     // Else, color the cluster in the most appropriate color.
     let color = clusterColors.value.get(cluster);
-    if (selectedClusterValue.value && selectedClusterValue.value === cluster) color = color ?? "blue";
-    if (selectedClusterValue.value && selectedClusterValue.value !== cluster) color = "grey";
+    if (selectedClusterValue.value && selectedClusterValue.value === cluster)
+      color = color ?? "blue";
+    if (selectedClusterValue.value && selectedClusterValue.value !== cluster)
+      color = "grey";
 
     // Add convex hull to the cluster.
+    /*
     const elements = getClusterElements(cluster);
     graphHullTool.add(
       nodes.value.filter((node: any) => elements.has(node.file)),
       cluster,
-      color,
+      color
     );
+    */
   }
 });
 
@@ -494,7 +512,10 @@ watch(
       .call(simulationDrag as any)
       .on("mouseover", (e: MouseEvent, node: any) => {
         if (!props.nodeTooltip) return;
-        graphTooltip.onMouseOver(e, node.file.extra.fullName ?? node.file.shortPath);
+        graphTooltip.onMouseOver(
+          e,
+          node.file.extra.fullName ?? node.file.shortPath
+        );
       })
       .on("mousemove", (e: MouseEvent) => {
         if (!props.nodeTooltip) return;
@@ -507,19 +528,20 @@ watch(
 
     // Set the nodes/edges of the simulation & restart.
     simulation.nodes(nodes);
-    simulation.force<any>("link").links(edges);
-    simulation.alpha(0.5).alphaTarget(0.3).restart();
+    (simulation.force("link") as energyForces.Links<any>).links(edges);
+    (simulation.force("charge") as energyForces.Charge).links(edges);
+    //simulation.alpha(0.5).alphaTarget(0.3).restart();
     // Undo the pause.
     simulationPaused.value = false;
 
     // Do not show the initial moving to the center animation.
     // This will make the graph instantly render at the center.
-    if (!graphCalculated.value) {
+    /* if (!graphCalculated.value) {
       simulation.stop();
       simulation.tick(edges.length); // more edges takes more ticks to reach the desired alpha
       simulation.restart();
       graphCalculated.value = true;
-    }
+    } */
   }
 );
 
@@ -528,14 +550,18 @@ watch(
   () => [width.value, height.value],
   ([width, height]) => {
     // Resize the graph.
-    graph
-      .attr("height", height)
-      .attr("width", width);
+    graph.attr("height", height).attr("width", width);
 
     // Resize the simulation.
-    simulation.force<any>("compact_x")?.x(width / 2);
-    simulation.force<any>("compact_y")?.y(height / 2);
-    simulation.force<any>("center")?.x(width / 2)?.y(height / 2);
+    // simulation.force("compact_x")?.x(width / 2);
+    // simulation.force("compact_y")?.y(height / 2);
+    /* (simulation.force("centering") as energyForces.Centering).center(
+      width / 2,
+      height / 2
+    );*/
+    (simulation.force("onScreen") as energyForces.OnScreen)
+      .width(width)
+      .height(height);
 
     // Update the graph when not yet initialized.
     // This must be done here, since the initial size of the graph is otherwise incorrect.
